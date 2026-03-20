@@ -1,13 +1,617 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vibecheck</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VibeCheck - AI 기획 워크플로우</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#6366f1',
+            'primary-dark': '#4f46e5',
+            secondary: '#8b5cf6',
+            accent: '#06b6d4',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    body { font-family: 'Pretendard', system-ui, sans-serif; }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    textarea:focus { outline: none; border-color: #6366f1; }
+    select:focus { outline: none; border-color: #6366f1; }
+    .chat-bubble pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
+  </style>
+</head>
+<body class="bg-white text-gray-800">
+<div id="app"></div>
+
+<script>
+// ===================== STATE =====================
+const state = {
+  page: 'landing',       // landing | idea | prd | zone
+  selectedModel: 'deepseek-v3',
+  // Idea Discovery
+  ideaMethod: 'pain-log',
+  chatHistory: [],
+  chatLoading: false,
+  // PRD Writer
+  activeChapter: 'why',
+  showPreview: false,
+  prdData: {
+    why: { background: '', problem: '', goal: '', kpi: '' },
+    who: { targetUser: '', stakeholder: '', persona: '', userJourney: '' },
+    what: { coreFeature: '', scope: '', priority: '', mvp: '' },
+    when: { timeline: '', milestone: '', sprint: '', deadline: '' },
+    where: { platform: '', infrastructure: '', deployment: '', environment: '' },
+    how: { techStack: '', architecture: '', api: '', testing: '' },
+  },
+  // Zone Map
+  zones: [],
+  selectedZone: null,
+  zoneDetail: '',
+  zoneActiveAction: null,
+};
+
+function navigate(page) { state.page = page; render(); }
+function setState(updates) { Object.assign(state, updates); render(); }
+
+// ===================== AI CONFIG =====================
+const AI_MODELS = [
+  { id: 'deepseek-v3', label: 'DeepSeek V3' },
+  { id: 'llama-4', label: 'Llama 4' },
+  { id: 'qwen-3', label: 'Qwen 3' },
+  { id: 'gemini-flash', label: 'Gemini Flash' },
+  { id: 'llama-70b', label: 'Llama 70B' },
+];
+
+// ===================== METHODS =====================
+const METHODS = [
+  { id: 'pain-log', label: '불편 로그', desc: '일상의 불편함에서 아이디어를 발견합니다.' },
+  { id: 'scamper', label: 'SCAMPER', desc: '기존 제품/서비스를 변형하여 새로운 아이디어를 만듭니다.' },
+  { id: 'hmw', label: 'HMW', desc: '"How Might We..." 질문으로 문제를 재정의합니다.' },
+  { id: 'trend', label: '트렌드 탐색', desc: '최신 트렌드에서 기회를 포착합니다.' },
+];
+const PRESETS = {
+  'pain-log': ['최근 업무에서 가장 불편했던 순간은?','반복적으로 시간을 낭비하는 작업은?','동료들이 자주 불만을 표현하는 부분은?'],
+  scamper: ['기존 프로세스에서 제거할 수 있는 단계는?','다른 산업의 방식을 적용하면 어떨까?','기존 도구의 순서를 바꾸면?'],
+  hmw: ['어떻게 하면 신규 입사자가 더 빨리 적응할 수 있을까?','어떻게 하면 회의 시간을 절반으로 줄일 수 있을까?','어떻게 하면 반복 업무를 자동화할 수 있을까?'],
+  trend: ['AI 기반 업무 도구 중 주목할 만한 트렌드는?','노코드/로우코드가 우리 업무에 미칠 영향은?','최근 생산성 도구의 혁신 사례는?'],
+};
+
+// ===================== PRD CHAPTERS =====================
+const CHAPTERS = [
+  { id: 'why', label: 'WHY', color: 'bg-red-500', fields: [
+    { key: 'background', label: '배경' },{ key: 'problem', label: '문제 정의' },{ key: 'goal', label: '목표' },{ key: 'kpi', label: 'KPI' }]},
+  { id: 'who', label: 'WHO', color: 'bg-orange-500', fields: [
+    { key: 'targetUser', label: '타겟 사용자' },{ key: 'stakeholder', label: '이해관계자' },{ key: 'persona', label: '페르소나' },{ key: 'userJourney', label: '사용자 여정' }]},
+  { id: 'what', label: 'WHAT', color: 'bg-yellow-500', fields: [
+    { key: 'coreFeature', label: '핵심 기능' },{ key: 'scope', label: '범위' },{ key: 'priority', label: '우선순위' },{ key: 'mvp', label: 'MVP 정의' }]},
+  { id: 'when', label: 'WHEN', color: 'bg-green-500', fields: [
+    { key: 'timeline', label: '타임라인' },{ key: 'milestone', label: '마일스톤' },{ key: 'sprint', label: '스프린트 계획' },{ key: 'deadline', label: '마감일' }]},
+  { id: 'where', label: 'WHERE', color: 'bg-blue-500', fields: [
+    { key: 'platform', label: '플랫폼' },{ key: 'infrastructure', label: '인프라' },{ key: 'deployment', label: '배포 환경' },{ key: 'environment', label: '개발 환경' }]},
+  { id: 'how', label: 'HOW', color: 'bg-violet-500', fields: [
+    { key: 'techStack', label: '기술 스택' },{ key: 'architecture', label: '아키텍처' },{ key: 'api', label: 'API 설계' },{ key: 'testing', label: '테스트 전략' }]},
+];
+const PRD_PRESETS = {
+  why: ['SMART 기준으로 목표를 다듬어줘','이 문제의 근본 원인을 분석해줘','KPI를 측정 가능한 형태로 제안해줘'],
+  who: ['타겟 사용자의 페르소나를 구체화해줘','이해관계자 맵을 그려줘','사용자 여정의 Pain Point를 분석해줘'],
+  what: ['MoSCoW 우선순위로 기능을 분류해줘','MVP에 포함할 최소 기능을 정의해줘','기능 범위가 적절한지 검토해줘'],
+  when: ['2주 스프린트로 일정을 나눠줘','마일스톤별 체크포인트를 제안해줘','일정 리스크 요인을 분석해줘'],
+  where: ['적절한 배포 환경을 추천해줘','인프라 요구사항을 정리해줘','개발/스테이징/프로덕션 환경을 구분해줘'],
+  how: ['기술 스택 선택 근거를 정리해줘','API 엔드포인트 목록을 생성해줘','테스트 전략을 수립해줘'],
+};
+const FIELD_LABELS = {
+  background:'배경',problem:'문제 정의',goal:'목표',kpi:'KPI',
+  targetUser:'타겟 사용자',stakeholder:'이해관계자',persona:'페르소나',userJourney:'사용자 여정',
+  coreFeature:'핵심 기능',scope:'범위',priority:'우선순위',mvp:'MVP 정의',
+  timeline:'타임라인',milestone:'마일스톤',sprint:'스프린트 계획',deadline:'마감일',
+  platform:'플랫폼',infrastructure:'인프라',deployment:'배포 환경',environment:'개발 환경',
+  techStack:'기술 스택',architecture:'아키텍처',api:'API 설계',testing:'테스트 전략',
+};
+
+// ===================== ZONES =====================
+const DEFAULT_ZONES = [
+  { id:1, name:'요구사항 분석', category:'WHY', row:0, deps:[] },
+  { id:2, name:'사용자 리서치', category:'WHO', row:0, deps:[1] },
+  { id:3, name:'경쟁 분석', category:'WHY', row:0, deps:[1] },
+  { id:4, name:'기술 조사', category:'HOW', row:0, deps:[1] },
+  { id:5, name:'기능 정의', category:'WHAT', row:1, deps:[1,2] },
+  { id:6, name:'UX 설계', category:'WHAT', row:1, deps:[2,5] },
+  { id:7, name:'정보 구조 설계', category:'WHAT', row:1, deps:[5] },
+  { id:8, name:'API 스펙 정의', category:'HOW', row:1, deps:[5,4] },
+  { id:9, name:'DB 스키마 설계', category:'HOW', row:2, deps:[5,8] },
+  { id:10, name:'UI 컴포넌트 개발', category:'HOW', row:2, deps:[6,7] },
+  { id:11, name:'백엔드 개발', category:'HOW', row:2, deps:[8,9] },
+  { id:12, name:'인증/보안 구현', category:'HOW', row:2, deps:[11] },
+  { id:13, name:'API 연동', category:'HOW', row:3, deps:[10,11] },
+  { id:14, name:'데이터 파이프라인', category:'HOW', row:3, deps:[9,11] },
+  { id:15, name:'외부 서비스 연동', category:'WHERE', row:3, deps:[11,12] },
+  { id:16, name:'알림/모니터링', category:'WHERE', row:3, deps:[11] },
+  { id:17, name:'통합 테스트', category:'HOW', row:4, deps:[13,14] },
+  { id:18, name:'성능 최적화', category:'HOW', row:4, deps:[13,17] },
+  { id:19, name:'배포 파이프라인', category:'WHERE', row:4, deps:[17,18] },
+  { id:20, name:'문서화/인수인계', category:'WHEN', row:4, deps:[17,19] },
+];
+
+const CATEGORY_COLORS = {
+  WHY:'border-l-red-500 bg-red-50', WHO:'border-l-orange-500 bg-orange-50',
+  WHAT:'border-l-yellow-500 bg-yellow-50', WHEN:'border-l-green-500 bg-green-50',
+  WHERE:'border-l-blue-500 bg-blue-50', HOW:'border-l-violet-500 bg-violet-50',
+};
+
+const ZONE_ACTIONS = [
+  { id:'detail', label:'구체화', desc:'작업 내용을 실무 수준 태스크로 세분화' },
+  { id:'gap', label:'갭 분석', desc:'5W1H 관점에서 빠진 항목 지적' },
+  { id:'output', label:'산출물', desc:'해당 Zone의 산출물 마크다운 템플릿 생성' },
+  { id:'deps', label:'의존성', desc:'선행/후속 Zone 관계 적절성 검토' },
+];
+
+// ===================== ICONS (SVG) =====================
+const icons = {
+  home: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1"/></svg>`,
+  zap: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`,
+  file: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>`,
+  grid: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>`,
+  send: `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>`,
+  arrow: `<svg class="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>`,
+  x: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`,
+  copy: `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>`,
+  chat: `<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>`,
+};
+
+// ===================== RENDER FUNCTIONS =====================
+
+function renderLanding() {
+  const steps = [
+    { icon: icons.zap, title: 'Idea Discovery', desc: '4가지 방법론으로 AI와 대화하며 아이디어를 구체화합니다.', color: 'bg-indigo-500' },
+    { icon: icons.file, title: 'PRD Writer', desc: '5W1H 프레임워크 기반 24개 항목 PRD를 AI가 자동 생성합니다.', color: 'bg-violet-500' },
+    { icon: icons.grid, title: 'Zone Map', desc: 'PRD 기반 20개 작업 Zone과 의존성을 시각화합니다.', color: 'bg-cyan-500' },
+  ];
+  return `
+    <div class="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-violet-50">
+      <header class="flex flex-col items-center px-6 pt-24 pb-16 text-center">
+        <h1 class="mb-4 text-5xl font-extrabold tracking-tight text-gray-900">
+          <span class="text-primary">Vibe</span>Check
+        </h1>
+        <p class="mb-2 max-w-xl text-lg text-gray-600">
+          아이디어부터 PRD, 작업 분해까지 &mdash; AI가 함께하는 기획 워크플로우
+        </p>
+        <p class="mb-8 text-sm text-gray-400">Idea &rarr; PRD &rarr; Zone Map</p>
+        <button onclick="navigate('idea')"
+          class="flex items-center gap-2 rounded-xl bg-primary px-8 py-3 text-lg font-semibold text-white shadow-lg transition hover:bg-primary-dark">
+          시작하기 ${icons.arrow}
+        </button>
+      </header>
+      <section class="mx-auto max-w-5xl px-6 pb-24">
+        <div class="grid gap-8 md:grid-cols-3">
+          ${steps.map((s, i) => `
+            <div class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm transition hover:shadow-md">
+              <div class="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl ${s.color} text-white">${s.icon}</div>
+              <div class="mb-1 text-xs font-bold uppercase tracking-wider text-gray-400">Step ${i+1}</div>
+              <h3 class="mb-2 text-xl font-bold text-gray-900">${s.title}</h3>
+              <p class="text-sm leading-relaxed text-gray-500">${s.desc}</p>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+      <footer class="border-t border-gray-100 py-8 text-center text-sm text-gray-400">
+        VibeCheck &mdash; AI Sprint-thon 2026
+      </footer>
+    </div>`;
+}
+
+function renderSidebar() {
+  const navItems = [
+    { page: 'landing', icon: icons.home, label: 'Home' },
+    { page: 'idea', icon: icons.zap, label: 'Idea Discovery' },
+    { page: 'prd', icon: icons.file, label: 'PRD Writer' },
+    { page: 'zone', icon: icons.grid, label: 'Zone Map' },
+  ];
+  return `
+    <aside class="flex w-64 flex-col border-r border-gray-200 bg-white shrink-0">
+      <div class="flex h-16 items-center px-6 cursor-pointer" onclick="navigate('landing')">
+        <span class="text-xl font-bold text-primary">VibeCheck</span>
+      </div>
+      <nav class="mt-4 flex-1 space-y-1 px-3">
+        ${navItems.map(n => `
+          <button onclick="navigate('${n.page}')"
+            class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+              state.page === n.page ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-100'
+            }">
+            ${n.icon} ${n.label}
+          </button>
+        `).join('')}
+      </nav>
+      <div class="border-t border-gray-200 p-4">
+        <label class="mb-1 block text-xs font-medium text-gray-500">AI Model</label>
+        <select onchange="setState({selectedModel: this.value})"
+          class="w-full rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm">
+          ${AI_MODELS.map(m => `<option value="${m.id}" ${state.selectedModel===m.id?'selected':''}>${m.label}</option>`).join('')}
+        </select>
+      </div>
+    </aside>`;
+}
+
+function renderStepIndicator() {
+  const steps = [
+    { page: 'idea', label: 'Idea Discovery', step: 1 },
+    { page: 'prd', label: 'PRD Writer', step: 2 },
+    { page: 'zone', label: 'Zone Map', step: 3 },
+  ];
+  const pageOrder = { idea: 1, prd: 2, zone: 3 };
+  const current = pageOrder[state.page] || 0;
+  return `
+    <div class="flex h-14 items-center gap-8 border-b border-gray-200 bg-white px-6">
+      ${steps.map(s => {
+        const isActive = s.step === current;
+        const isDone = s.step < current;
+        return `
+          <div class="flex items-center gap-2">
+            <span class="flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+              isActive ? 'bg-primary text-white' : isDone ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'
+            }">${isDone ? '&#10003;' : s.step}</span>
+            <span class="text-sm font-medium ${isActive ? 'text-primary' : 'text-gray-500'}">${s.label}</span>
+            ${s.step < 3 ? '<span class="ml-4 h-px w-12 bg-gray-300 inline-block"></span>' : ''}
+          </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function renderChatPanel() {
+  return `
+    <div class="flex h-full flex-col rounded-xl border border-gray-200 bg-white">
+      <div class="flex-1 space-y-4 overflow-y-auto p-4" id="chatMessages">
+        ${state.chatHistory.length === 0 ? '<div class="flex h-full items-center justify-center text-sm text-gray-400">AI와 대화를 시작하세요</div>' : ''}
+        ${state.chatHistory.map(msg => `
+          <div class="flex ${msg.role==='user' ? 'justify-end' : 'justify-start'} fade-in">
+            <div class="chat-bubble max-w-[75%] rounded-xl px-4 py-2.5 text-sm leading-relaxed ${
+              msg.role==='user' ? 'bg-primary text-white' : 'bg-gray-100 text-gray-800'
+            }"><pre>${escapeHtml(msg.content)}</pre></div>
+          </div>
+        `).join('')}
+        ${state.chatLoading ? '<div class="flex justify-start fade-in"><div class="rounded-xl bg-gray-100 px-4 py-2.5 text-sm text-gray-500">생각 중...</div></div>' : ''}
+      </div>
+      <div class="border-t border-gray-200 p-3">
+        <div class="flex items-end gap-2">
+          <textarea id="chatInput" rows="1" placeholder="메시지를 입력하세요..."
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"
+            class="flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm"></textarea>
+          <button onclick="sendChat()"
+            class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-white transition hover:bg-primary-dark">
+            ${icons.send}
+          </button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderIdeaPage() {
+  return `
+    <div class="flex h-full gap-6">
+      <div class="w-80 shrink-0 space-y-4 overflow-y-auto">
+        <h2 class="text-lg font-bold text-gray-900">Idea Discovery</h2>
+        <p class="text-sm text-gray-500">방법론을 선택하고 AI와 대화하며 아이디어를 구체화하세요.</p>
+        <div class="space-y-2">
+          ${METHODS.map(m => `
+            <button onclick="setState({ideaMethod:'${m.id}'})"
+              class="w-full rounded-lg border p-3 text-left transition ${
+                state.ideaMethod===m.id ? 'border-primary bg-primary/5' : 'border-gray-200 hover:border-gray-300'
+              }">
+              <div class="text-sm font-semibold text-gray-800">${m.label}</div>
+              <div class="text-xs text-gray-500">${m.desc}</div>
+            </button>
+          `).join('')}
+        </div>
+        <div class="pt-4">
+          <div class="mb-2 text-xs font-medium text-gray-400">프리셋 질문</div>
+          <div class="space-y-1.5">
+            ${(PRESETS[state.ideaMethod]||[]).map(q => `
+              <button onclick="document.getElementById('chatInput').value='${escapeAttr(q)}';sendChat()"
+                class="w-full rounded-md border border-gray-200 px-3 py-2 text-left text-xs text-gray-600 transition hover:bg-gray-50">
+                ${escapeHtml(q)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+        <button onclick="navigate('prd')"
+          class="mt-4 w-full rounded-lg bg-primary py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark">
+          PRD Writer로 이동 &rarr;
+        </button>
+      </div>
+      <div class="flex-1 min-h-0">${renderChatPanel()}</div>
+    </div>`;
+}
+
+function renderPRDPage() {
+  const ch = CHAPTERS.find(c => c.id === state.activeChapter);
+  const presets = PRD_PRESETS[state.activeChapter] || [];
+
+  let content;
+  if (state.showPreview) {
+    content = renderPRDPreview();
+  } else {
+    content = `
+      <div class="space-y-6 fade-in">
+        <div class="flex items-center gap-3">
+          <span class="h-4 w-4 rounded-full ${ch.color}"></span>
+          <h3 class="text-xl font-bold text-gray-900">${ch.label}</h3>
+        </div>
+        <div class="grid gap-4 lg:grid-cols-2">
+          ${ch.fields.map(f => `
+            <div class="space-y-1.5">
+              <div class="flex items-center justify-between">
+                <label class="text-sm font-medium text-gray-700">${f.label}</label>
+                <button class="flex items-center gap-1 text-xs text-primary hover:underline">${icons.chat} AI 피드백</button>
+              </div>
+              <textarea rows="4" placeholder="${f.label}을(를) 작성하세요..."
+                oninput="state.prdData['${ch.id}']['${f.key}']=this.value"
+                class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">${escapeHtml(state.prdData[ch.id][f.key])}</textarea>
+            </div>
+          `).join('')}
+        </div>
+        <div>
+          <div class="mb-2 text-xs font-medium text-gray-400">AI 프리셋 질문</div>
+          <div class="flex flex-wrap gap-2">
+            ${presets.map(p => `
+              <button class="rounded-full border border-gray-200 px-3 py-1.5 text-xs text-gray-600 transition hover:border-primary hover:text-primary">${p}</button>
+            `).join('')}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="flex h-full gap-6">
+      <div class="w-56 shrink-0 space-y-3 overflow-y-auto">
+        <h2 class="text-lg font-bold text-gray-900">PRD Writer</h2>
+        <p class="text-xs text-gray-500">5W1H 프레임워크</p>
+        <button onclick="alert('Idea Discovery 대화 맥락을 기반으로 AI가 24개 항목을 자동 생성합니다.')"
+          class="w-full rounded-lg border-2 border-dashed border-primary/40 py-2 text-sm font-medium text-primary transition hover:bg-primary/5">
+          AI 자동 초안 생성
+        </button>
+        <div class="space-y-1.5">
+          ${CHAPTERS.map(c => {
+            const filled = Object.values(state.prdData[c.id]).filter(Boolean).length;
+            return `
+              <button onclick="setState({activeChapter:'${c.id}', showPreview:false})"
+                class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${
+                  state.activeChapter===c.id && !state.showPreview ? 'bg-gray-100 font-semibold text-gray-900' : 'text-gray-600 hover:bg-gray-50'
+                }">
+                <span class="h-3 w-3 rounded-full ${c.color}"></span>
+                <span class="flex-1 text-sm">${c.label}</span>
+                <span class="text-xs text-gray-400">${filled}/4</span>
+              </button>`;
+          }).join('')}
+        </div>
+        <div class="space-y-2 pt-4">
+          <button onclick="setState({showPreview:!state.showPreview})"
+            class="w-full rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+            ${state.showPreview ? '편집 모드' : 'PRD 미리보기'}
+          </button>
+          <button onclick="navigate('zone')"
+            class="w-full rounded-lg bg-primary py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark">
+            Zone Map으로 이동 &rarr;
+          </button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-y-auto">${content}</div>
+    </div>`;
+}
+
+function renderPRDPreview() {
+  return `
+    <div class="space-y-6 fade-in">
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-bold text-gray-900">PRD 미리보기</h3>
+        <button onclick="copyPRDMarkdown()"
+          class="flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 transition hover:bg-gray-50">
+          ${icons.copy} 마크다운 복사
+        </button>
+      </div>
+      ${CHAPTERS.map(ch => `
+        <div class="rounded-lg border border-gray-200 p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <span class="h-3 w-3 rounded-full ${ch.color}"></span>
+            <h4 class="font-bold text-gray-800">${ch.label}</h4>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            ${ch.fields.map(f => {
+              const val = state.prdData[ch.id][f.key];
+              return `
+                <div>
+                  <div class="text-xs font-medium text-gray-400">${FIELD_LABELS[f.key]}</div>
+                  <div class="mt-0.5 text-sm text-gray-700 whitespace-pre-wrap">${val ? escapeHtml(val) : '<span class="text-gray-300">(미작성)</span>'}</div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+function renderZonePage() {
+  if (state.zones.length === 0) {
+    state.zones = DEFAULT_ZONES.map(z => ({ ...z, detail: '', status: 'todo' }));
+  }
+  const rows = [0,1,2,3,4];
+  const rowLabels = ['Foundation', 'Design', 'Build', 'Integrate', 'Deliver'];
+
+  return `
+    <div class="h-full space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-bold text-gray-900">Zone Map</h2>
+          <p class="text-sm text-gray-500">좌(선행) &rarr; 우(후속) 의존성 흐름</p>
+        </div>
+        <div class="flex gap-2">
+          <button class="rounded-lg border border-primary px-4 py-2 text-sm font-medium text-primary transition hover:bg-primary/5">
+            PRD에서 자동 생성
+          </button>
+          <button class="rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-700">
+            작업 목록 내보내기
+          </button>
+        </div>
+      </div>
+      <div class="overflow-auto rounded-xl border border-gray-200 bg-white p-6">
+        ${rows.map(r => `
+          <div class="mb-2">
+            <div class="mb-1 text-[10px] font-bold uppercase tracking-wider text-gray-300">${rowLabels[r]}</div>
+            <div class="grid grid-cols-4 gap-3">
+              ${state.zones.filter(z => z.row === r).map(z => `
+                <button onclick="openZoneModal(${z.id})"
+                  class="rounded-lg border border-l-4 p-3 text-left transition hover:shadow-md ${CATEGORY_COLORS[z.category] || 'border-l-gray-400 bg-gray-50'}">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-400">#${z.id}</span>
+                    <span class="rounded bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">${z.category}</span>
+                  </div>
+                  <div class="mt-1.5 text-sm font-semibold text-gray-800">${z.name}</div>
+                  ${z.deps.length > 0 ? `<div class="mt-2 text-[10px] text-gray-400">의존: ${z.deps.map(d=>'#'+d).join(', ')}</div>` : ''}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ${state.selectedZone ? renderZoneModal() : ''}`;
+}
+
+function renderZoneModal() {
+  const z = state.selectedZone;
+  return `
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onclick="if(event.target===this)closeZoneModal()">
+      <div class="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl fade-in">
+        <div class="mb-4 flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-gray-400">Zone #${z.id} &middot; ${z.category}</span>
+            <h3 class="text-lg font-bold text-gray-900">${z.name}</h3>
+          </div>
+          <button onclick="closeZoneModal()" class="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100">${icons.x}</button>
+        </div>
+        <div class="mb-4 flex gap-2">
+          ${ZONE_ACTIONS.map(a => `
+            <button onclick="setState({zoneActiveAction:'${a.id}'})"
+              class="rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                state.zoneActiveAction===a.id ? 'border-primary bg-primary/10 text-primary' : 'border-gray-200 text-gray-600 hover:border-gray-300'
+              }">${a.label}</button>
+          `).join('')}
+        </div>
+        ${state.zoneActiveAction ? `
+          <div class="mb-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-500">
+            ${ZONE_ACTIONS.find(a=>a.id===state.zoneActiveAction)?.desc || ''}
+          </div>` : ''}
+        <textarea id="zoneDetailInput" rows="6" placeholder="Zone 상세 내용을 작성하세요..."
+          class="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm">${escapeHtml(z.detail||'')}</textarea>
+        ${z.deps.length > 0 ? `<div class="mb-4 text-xs text-gray-400">선행 Zone: ${z.deps.map(d=>'#'+d).join(', ')}</div>` : ''}
+        <div class="flex justify-end gap-2">
+          <button onclick="closeZoneModal()" class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:bg-gray-50">취소</button>
+          <button onclick="saveZoneDetail()" class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-dark">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ===================== ACTIONS =====================
+
+function sendChat() {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+  state.chatHistory.push({ role: 'user', content: text });
+  state.chatLoading = true;
+  render();
+  // Simulate AI response
+  setTimeout(() => {
+    const method = METHODS.find(m => m.id === state.ideaMethod);
+    state.chatHistory.push({
+      role: 'assistant',
+      content: `[${state.selectedModel}] "${text}"에 대한 분석입니다.\n\n${method ? method.label + ' 방법론' : 'AI'}을 기반으로 분석하면:\n\n1. 이 아이디어는 실제 업무 현장의 Pain Point를 정확히 짚고 있습니다.\n2. 구체화를 위해 타겟 사용자의 일일 업무 플로우를 더 깊이 파악해보면 좋겠습니다.\n3. 유사 솔루션 대비 차별점을 "AI 자동화" 관점에서 정리해보세요.\n\n더 구체적인 방향을 잡아볼까요?`
+    });
+    state.chatLoading = false;
+    render();
+    const msgs = document.getElementById('chatMessages');
+    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  }, 1200);
+}
+
+function openZoneModal(id) {
+  state.selectedZone = state.zones.find(z => z.id === id);
+  state.zoneDetail = state.selectedZone?.detail || '';
+  state.zoneActiveAction = null;
+  render();
+}
+
+function closeZoneModal() {
+  state.selectedZone = null;
+  state.zoneActiveAction = null;
+  render();
+}
+
+function saveZoneDetail() {
+  const input = document.getElementById('zoneDetailInput');
+  if (input && state.selectedZone) {
+    const idx = state.zones.findIndex(z => z.id === state.selectedZone.id);
+    if (idx >= 0) state.zones[idx].detail = input.value;
+  }
+  closeZoneModal();
+}
+
+function copyPRDMarkdown() {
+  let md = '# PRD (Product Requirements Document)\n\n';
+  for (const ch of CHAPTERS) {
+    md += `## ${ch.label}\n\n`;
+    for (const f of ch.fields) {
+      const val = state.prdData[ch.id][f.key];
+      md += `### ${f.label}\n${val || '(미작성)'}\n\n`;
+    }
+  }
+  navigator.clipboard.writeText(md).then(() => alert('마크다운이 클립보드에 복사되었습니다.'));
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escapeAttr(str) {
+  return String(str).replace(/'/g,"\\'").replace(/"/g,'&quot;');
+}
+
+// ===================== MAIN RENDER =====================
+
+function render() {
+  const app = document.getElementById('app');
+  if (state.page === 'landing') {
+    app.innerHTML = renderLanding();
+    return;
+  }
+
+  let pageContent;
+  if (state.page === 'idea') pageContent = renderIdeaPage();
+  else if (state.page === 'prd') pageContent = renderPRDPage();
+  else if (state.page === 'zone') pageContent = renderZonePage();
+
+  app.innerHTML = `
+    <div class="flex h-screen">
+      ${renderSidebar()}
+      <div class="flex flex-1 flex-col overflow-hidden">
+        ${renderStepIndicator()}
+        <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+          ${pageContent}
+        </main>
+      </div>
+    </div>`;
+}
+
+// Initial render
+render();
+</script>
+</body>
 </html>
