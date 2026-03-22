@@ -36,7 +36,7 @@
 // ===================== STATE =====================
 const state = {
   page: 'landing',       // landing | idea | prd | zone
-  selectedModel: 'deepseek-v3',
+  selectedModel: 'llama3.2',
   // Idea Discovery
   ideaMethod: 'pain-log',
   chatHistory: [],
@@ -64,11 +64,7 @@ function setState(updates) { Object.assign(state, updates); render(); }
 
 // ===================== AI CONFIG =====================
 const AI_MODELS = [
-  { id: 'deepseek-v3', label: 'DeepSeek V3' },
-  { id: 'llama-4', label: 'Llama 4' },
-  { id: 'qwen-3', label: 'Qwen 3' },
-  { id: 'gemini-flash', label: 'Gemini Flash' },
-  { id: 'llama-70b', label: 'Llama 70B' },
+  { id: 'llama3.2', label: 'Llama 3.2 (Local)' },
 ];
 
 // ===================== METHODS =====================
@@ -521,26 +517,53 @@ function renderZoneModal() {
 
 // ===================== ACTIONS =====================
 
-function sendChat() {
+async function sendChat() {
   const input = document.getElementById('chatInput');
   if (!input) return;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || state.chatLoading) return;
+
   state.chatHistory.push({ role: 'user', content: text });
   state.chatLoading = true;
+  input.value = '';
   render();
-  // Simulate AI response
-  setTimeout(() => {
-    const method = METHODS.find(m => m.id === state.ideaMethod);
-    state.chatHistory.push({
-      role: 'assistant',
-      content: `[${state.selectedModel}] "${text}"에 대한 분석입니다.\n\n${method ? method.label + ' 방법론' : 'AI'}을 기반으로 분석하면:\n\n1. 이 아이디어는 실제 업무 현장의 Pain Point를 정확히 짚고 있습니다.\n2. 구체화를 위해 타겟 사용자의 일일 업무 플로우를 더 깊이 파악해보면 좋겠습니다.\n3. 유사 솔루션 대비 차별점을 "AI 자동화" 관점에서 정리해보세요.\n\n더 구체적인 방향을 잡아볼까요?`
+
+  const method = METHODS.find(m => m.id === state.ideaMethod);
+  const systemPrompt = state.page === 'idea'
+    ? `당신은 아이디어 발견을 돕는 AI 코치입니다. 현재 방법론: ${method?.label || ''}. 사용자의 입력을 분석하여 구체적인 제품/서비스 아이디어를 도출해주세요. 한국어로 답변하세요.`
+    : '당신은 기획 전문가 AI입니다. 사용자의 질문에 구체적이고 실용적인 답변을 해주세요. 한국어로 답변하세요.';
+
+  try {
+    const msgs = [
+      { role: 'system', content: systemPrompt },
+      ...state.chatHistory.filter(m => m.role === 'user' || m.role === 'assistant'),
+    ];
+    const res = await fetch('http://localhost:11434/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: state.selectedModel,
+        messages: msgs,
+        stream: false,
+      }),
     });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Ollama ${res.status}: ${err}`);
+    }
+
+    const data = await res.json();
+    const reply = data.message?.content || '응답을 받지 못했습니다.';
+    state.chatHistory.push({ role: 'assistant', content: reply });
+  } catch (err) {
+    state.chatHistory.push({ role: 'assistant', content: `오류: ${err.message}\n\nOllama가 실행 중인지 확인하세요.` });
+  } finally {
     state.chatLoading = false;
     render();
     const msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
-  }, 1200);
+  }
 }
 
 function openZoneModal(id) {
